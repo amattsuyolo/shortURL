@@ -5,15 +5,20 @@ namespace App\Services;
 use App\Models\ShortUrl;
 use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
+use App\Services\ShortUrl\ShortUrlGeneratorInterface;
 
 class ShortUrlService
 {
     private $bloomFilterService;
+    private $generator;
 
-    public function __construct(BloomFilterService $bloomFilterService)
+    public function __construct(
+        BloomFilterService $bloomFilterService,
+        ShortUrlGeneratorInterface $generator
+    )
     {
         $this->bloomFilterService = $bloomFilterService;
+        $this->generator = $generator;
     }
 
     /**
@@ -70,10 +75,38 @@ class ShortUrlService
      */
     public function createShortUrl(string $originalUrl, int $limit = 0): string
     {
-        do {
-            $shortCode = Str::random(6);
-        } while (ShortUrl::where('short_code', $shortCode)->exists()); // 確保短碼唯一
+        // 使用生成器創建短碼
+        $shortCode = $this->generator->generate($originalUrl, $limit);
 
+        // 更新布隆過濾器
+        $this->bloomFilterService->update($shortCode);
+
+        return $shortCode;
+    }
+    /**
+     * 創建短網址
+     *
+     * @param string $originalUrl 原始網址
+     * @param int $limit 訪問限制
+     * @return string 生成的短網址
+     */
+    public function createShortUrlV2(string $originalUrl, int $limit = 0): string
+    {
+        // 使用哈希函數生成摘要
+        $hash = md5($originalUrl); // 或者使用其他哈希函數，例如 sha256
+
+        // 裁剪哈希摘要生成短碼
+        $shortCode = substr($hash, 0, 6); // 使用前 6 個字符作為短碼
+
+        // 確保短碼唯一（解決哈希碰撞）
+        $counter = 0;
+        while (ShortUrl::where('short_code', $shortCode)->exists()) {
+            $counter++;
+            // 如果短碼已存在，附加遞增數字來解決衝突
+            $shortCode = substr($hash, 0, 5) . $counter;
+        }
+
+        // 存入數據庫
         ShortUrl::create([
             'short_code' => $shortCode,
             'original_url' => $originalUrl,
@@ -85,5 +118,57 @@ class ShortUrlService
         $this->bloomFilterService->update($shortCode);
 
         return $shortCode;
+    }
+    /**
+     * 創建短網址
+     *
+     * @param string $originalUrl 原始網址
+     * @param int $limit 訪問限制
+     * @return string 生成的短網址
+     */
+    public function createShortUrlV3(string $originalUrl, int $limit = 0): string
+    {
+        // 獲取當天的日期 (格式: YYYYMMDD)
+        $today = date('Ymd');
+
+        // 使用 Redis 的 HASH 結構記錄每天的遞增 ID
+        $uniqueId = Redis::hincrby('short_url:unique_id', $today, 1);
+
+        // 將日期與遞增 ID 拼接後進行 Base62 編碼
+        $shortCode = $this->encodeBase62("{$today}{$uniqueId}");
+
+        // 將短網址數據存入資料庫
+        ShortUrl::create([
+            'short_code' => $shortCode,
+            'original_url' => $originalUrl,
+            'access_limit' => $limit,
+            'access_count' => 0,
+        ]);
+
+        // 更新布隆過濾器
+        $this->bloomFilterService->update($shortCode);
+
+        return $shortCode;
+    }
+
+    /**
+     * 將整數編碼為 Base62 字符串
+     *
+     * @param string $number 整數或數字字符串
+     * @return string Base62 編碼字符串
+     */
+    private function encodeBase62(string $number): string
+    {
+        $characters = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+        $base = strlen($characters);
+        $result = '';
+
+        $number = intval($number);
+        do {
+            $result = $characters[$number % $base] . $result;
+            $number = intdiv($number, $base);
+        } while ($number > 0);
+
+        return $result;
     }
 }
