@@ -46,7 +46,7 @@ class BloomFilterService
     // 初始化布隆過濾器
     public function initialize()
     {
-        $shortUrls = DB::table('short_urls')->pluck('code');
+        $shortUrls = DB::table('short_urls')->pluck('short_code');
         foreach ($shortUrls as $code) {
             foreach ($this->hashFunctions as $hashFunction) {
                 $hash = $hashFunction($code) % $this->bitVectorSize;
@@ -66,5 +66,13 @@ class BloomFilterService
             $hash *= $prime;
         }
         return $hash & 0xffffffff; // 保持 32 位
+    }
+    public function reset()
+    {
+        // 清空布隆過濾器
+        Redis::del($this->bloomKey);
+
+        // 重新初始化布隆過濾器
+        $this->initialize();
     }
 }
